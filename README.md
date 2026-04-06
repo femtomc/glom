@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Ridiculously over-the-top logo for a package that does basically nothing.</em>
+  <em>Ridiculously over-the-top AI generated logo for a package that does basically nothing.</em>
 </p>
 
 I'm constantly trying to find things in the event logs stored by my coding agents:
