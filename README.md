@@ -9,6 +9,10 @@ full-text indexing.  Session JSONL files also get structured tool-call
 extraction (tool name, input, output, error status, line number), stored in
 a separate searchable table.
 
+Session document search indexes human-facing transcript text. Structured tool
+payloads and repeated session metadata stay in the dedicated `tool_calls`
+table instead of being duplicated into document search.
+
 ## Install
 
 ```

@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 CREATE INDEX IF NOT EXISTS idx_tc_session ON tool_calls(session_path);
 CREATE INDEX IF NOT EXISTS idx_tc_name    ON tool_calls(tool_name);
+CREATE INDEX IF NOT EXISTS idx_documents_path_mtime ON documents(path, mtime);
 """
 
 _FTS = """\
@@ -174,13 +175,23 @@ class Database:
     def commit(self) -> None:
         self._conn.commit()
 
+    def _set_journal_mode(self, mode: str) -> None:
+        self._conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
+
     # -- bulk mode ------------------------------------------------------------
 
     def begin_bulk(self) -> None:
-        """Drop FTS triggers and tune pragmas for high-throughput inserts."""
+        """Drop FTS triggers and reduce write amplification for bulk rebuilds.
+
+        The index database is a cache derived from source files, so bulk loads
+        trade crash recovery for much faster inserts and FTS rebuilds.
+        """
         self._conn.executescript(_DROP_TRIGGERS)
+        self._set_journal_mode("MEMORY")
+        self._conn.execute("PRAGMA locking_mode = EXCLUSIVE").fetchone()
+        self._conn.execute("PRAGMA temp_store = MEMORY")
         self._conn.execute("PRAGMA cache_size = -65536")    # 64 MB
-        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA synchronous = OFF")
 
     def end_bulk(self) -> None:
         """Rebuild both FTS indices from content tables, restore triggers."""
@@ -195,9 +206,13 @@ class Database:
         )
         # Restore defaults
         self._conn.executescript(_TRIGGERS)
+        self._conn.commit()
         self._conn.execute("PRAGMA cache_size = -2000")
         self._conn.execute("PRAGMA mmap_size = 0")
-        self._conn.commit()
+        self._conn.execute("PRAGMA temp_store = DEFAULT")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA locking_mode = NORMAL").fetchone()
+        self._set_journal_mode("WAL")
 
     # -- incremental helpers --------------------------------------------------
 
@@ -206,6 +221,14 @@ class Database:
             "SELECT mtime FROM documents WHERE path = ?", (path,)
         ).fetchone()
         return row["mtime"] if row else None
+
+    def get_all_mtimes(self) -> dict[str, float]:
+        return {
+            r["path"]: r["mtime"]
+            for r in self._conn.execute(
+                "SELECT path, mtime FROM documents"
+            ).fetchall()
+        }
 
     def get_all_paths(self) -> set[str]:
         return {

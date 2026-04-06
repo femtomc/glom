@@ -174,14 +174,80 @@ def _collect_texts(obj: object, acc: list[str], depth: int = 0) -> None:
     if depth > 15:
         return
     if isinstance(obj, str):
-        if len(obj) > 3 and not _UUID_RE.match(obj) and not _HEX_RE.match(obj):
-            acc.append(obj)
+        text = obj.strip()
+        if len(text) > 3 and not _UUID_RE.match(text) and not _HEX_RE.match(text):
+            acc.append(text)
     elif isinstance(obj, dict):
         for v in obj.values():
             _collect_texts(v, acc, depth + 1)
     elif isinstance(obj, list):
         for item in obj:
             _collect_texts(item, acc, depth + 1)
+
+
+def _collect_visible_text(obj: object, acc: list[str]) -> None:
+    """Extract human-facing transcript text from structured message blocks."""
+    if isinstance(obj, str):
+        _collect_texts(obj, acc)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            _collect_visible_text(item, acc)
+        return
+    if not isinstance(obj, dict):
+        return
+
+    block_type = obj.get("type")
+    if block_type in {
+        "thinking",
+        "reasoning",
+        "tool_use",
+        "tool_result",
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "image",
+        "input_image",
+    }:
+        return
+
+    if block_type in {"text", "input_text", "output_text"}:
+        _collect_visible_text(obj.get("text"), acc)
+        return
+
+    for key in ("text", "message", "content"):
+        if key in obj:
+            _collect_visible_text(obj[key], acc)
+
+
+def _collect_claude_session_text(obj: dict, acc: list[str]) -> None:
+    if obj.get("type") not in {"user", "assistant"}:
+        return
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return
+    _collect_visible_text(message.get("content"), acc)
+
+
+def _collect_codex_session_text(obj: dict, acc: list[str]) -> None:
+    kind = obj.get("type")
+
+    if kind == "event_msg":
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return
+        payload_type = payload.get("type")
+        if payload_type in {"user_message", "agent_message"}:
+            _collect_visible_text(payload.get("message"), acc)
+        return
+
+    if kind == "response_item":
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") == "message" and payload.get("role") in {"user", "assistant"}:
+            _collect_visible_text(payload.get("content"), acc)
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +359,9 @@ def _parse_session(
     pending: dict[str, list] = {}
     finished: list[_ToolTuple] = []
     extractor = _extract_claude_calls if source == "claude" else _extract_codex_calls
+    text_extractor = (
+        _collect_claude_session_text if source == "claude" else _collect_codex_session_text
+    )
 
     with path.open(errors="replace") as f:
         for line_num, raw in enumerate(f, 1):
@@ -303,7 +372,7 @@ def _parse_session(
                 obj = json.loads(raw)
             except (json.JSONDecodeError, RecursionError):
                 continue
-            _collect_texts(obj, text_parts)
+            text_extractor(obj, text_parts)
             finished.extend(extractor(obj, pending, line_num))
 
     # Flush invocations whose results never appeared (truncated sessions, etc.)
@@ -382,6 +451,7 @@ def index_all(
     stats = IndexStats()
     entries = discover(claude_root, codex_root)
     seen: set[str] = set()
+    existing_mtimes = db.get_all_mtimes()
 
     # ── phase 1: classify ────────────────────────────────────────────────
     if on_phase:
@@ -399,13 +469,12 @@ def index_all(
             stats.error_paths.append(str_path)
             continue
 
-        if not full:
-            existing = db.get_mtime(str_path)
-            if existing is not None and existing >= mtime:
-                stats.unchanged += 1
-                continue
+        existing = existing_mtimes.get(str_path)
+        if not full and existing is not None and existing >= mtime:
+            stats.unchanged += 1
+            continue
 
-        is_new = db.get_mtime(str_path) is None
+        is_new = existing is None
         work.append(_WorkItem(entry, is_new))
 
     # ── phase 2: parse + insert ──────────────────────────────────────────
@@ -445,7 +514,7 @@ def index_all(
             db.end_bulk()
 
     # ── phase 3: prune stale entries ─────────────────────────────────────
-    for stale in db.get_all_paths() - seen:
+    for stale in existing_mtimes.keys() - seen:
         db.delete_path(stale)
         stats.deleted += 1
 
