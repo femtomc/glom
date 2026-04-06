@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" fill="none">
+  <title>glom logo</title>
+  <desc>A terminal-native wordmark and symbol for glom.</desc>
+
+  <rect x="16" y="16" width="1248" height="328" rx="34" fill="#0B1220"/>
+  <rect x="16.5" y="16.5" width="1247" height="327" rx="33.5" stroke="#243247"/>
+
+  <rect x="44" y="44" width="284" height="272" rx="26" fill="#101A2D"/>
+  <rect x="44.5" y="44.5" width="283" height="271" rx="25.5" stroke="#243247"/>
+  <path d="M68 98H304" stroke="#243247" stroke-width="6"/>
+  <circle cx="86" cy="98" r="6" fill="#F97316"/>
+  <circle cx="108" cy="98" r="6" fill="#14B8A6"/>
+  <circle cx="130" cy="98" r="6" fill="#60A5FA"/>
+
+  <path d="M78 136L94 152L78 168" stroke="#F97316" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M112 152H216" stroke="#F97316" stroke-width="12" stroke-linecap="square"/>
+
+  <path d="M78 186H92V200H78" stroke="#14B8A6" stroke-width="8" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M112 192H216" stroke="#14B8A6" stroke-width="12" stroke-linecap="square"/>
+
+  <rect x="78" y="230" width="18" height="12" fill="#60A5FA"/>
+  <path d="M112 236H216" stroke="#60A5FA" stroke-width="12" stroke-linecap="square"/>
+
+  <path d="M232 124V264H252" stroke="#E5EDF7" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M284 124H304V264H284" stroke="#E5EDF7" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter"/>
+  <rect x="246" y="144" width="34" height="12" fill="#F97316"/>
+  <rect x="246" y="188" width="46" height="12" fill="#14B8A6"/>
+  <rect x="246" y="232" width="24" height="12" fill="#60A5FA"/>
+  <rect x="276" y="232" width="16" height="16" fill="#E5EDF7"/>
+
+  <path d="M388 132L410 154L388 176" stroke="#F97316" stroke-width="12" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text
+    x="436"
+    y="186"
+    fill="#E5EDF7"
+    font-family="JetBrains Mono, IBM Plex Mono, SFMono-Regular, Menlo, Consolas, monospace"
+    font-size="126"
+    font-weight="700"
+    letter-spacing="-6"
+  >glom</text>
+  <rect x="830" y="160" width="28" height="16" fill="#14B8A6"/>
+
+  <text
+    x="438"
+    y="246"
+    fill="#8EA0BC"
+    font-family="JetBrains Mono, IBM Plex Mono, SFMono-Regular, Menlo, Consolas, monospace"
+    font-size="28"
+    font-weight="600"
+    letter-spacing="2"
+  >FULL-TEXT INDEX OVER AGENT CONTEXT</text>
+</svg>

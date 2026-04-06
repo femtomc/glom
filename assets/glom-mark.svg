@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>glom mark</title>
+  <desc>Terminal rows feed into a bracketed search index.</desc>
+
+  <rect x="32" y="32" width="448" height="448" rx="52" fill="#0B1220"/>
+  <rect x="32.5" y="32.5" width="447" height="447" rx="51.5" stroke="#243247"/>
+
+  <path d="M76 112H436" stroke="#243247" stroke-width="8"/>
+  <circle cx="98" cy="112" r="8" fill="#F97316"/>
+  <circle cx="126" cy="112" r="8" fill="#14B8A6"/>
+  <circle cx="154" cy="112" r="8" fill="#60A5FA"/>
+
+  <path d="M88 176L112 196L88 216" stroke="#F97316" stroke-width="14" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M136 196H304" stroke="#F97316" stroke-width="16" stroke-linecap="square"/>
+
+  <path d="M88 246H108V266H88" stroke="#14B8A6" stroke-width="12" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M136 256H304" stroke="#14B8A6" stroke-width="16" stroke-linecap="square"/>
+
+  <rect x="88" y="308" width="28" height="16" fill="#60A5FA"/>
+  <path d="M136 316H304" stroke="#60A5FA" stroke-width="16" stroke-linecap="square"/>
+
+  <path d="M328 156V356H360" stroke="#E5EDF7" stroke-width="14" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M408 156H440V356H408" stroke="#E5EDF7" stroke-width="14" stroke-linecap="square" stroke-linejoin="miter"/>
+
+  <rect x="348" y="188" width="56" height="16" fill="#F97316"/>
+  <rect x="348" y="248" width="72" height="16" fill="#14B8A6"/>
+  <rect x="348" y="308" width="40" height="16" fill="#60A5FA"/>
+  <rect x="396" y="308" width="24" height="24" fill="#E5EDF7"/>
+</svg>

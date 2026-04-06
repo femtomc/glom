@@ -1,5 +1,9 @@
 # glom
 
+<p align="center">
+  <img src="assets/glom-logo.svg" alt="glom logo" width="720">
+</p>
+
 I'm constantly trying to find things in the event logs stored by my coding agents:
 "when did we do this again? What was the context surrounding this change?"
 
