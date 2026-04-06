@@ -1,6 +1,9 @@
 # glom
 
-Index and full-text search over agent context stored in `~/.claude` and `~/.codex`.
+I'm constantly trying to find things in the event logs stored by my coding agents:
+"when did we do this again? What was the context surrounding this change?"
+
+Here's a tool to index and full-text search over agent context stored in `~/.claude` and `~/.codex`.
 
 glom walks both directories, parses every discoverable file — session
 transcripts, memory files, plans, tasks, skills, instructions, settings,
