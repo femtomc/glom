@@ -1,4 +1,4 @@
-"""rich-click CLI for glom: index & search agent context."""
+"""CLI for glom: index & search agent context."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from collections.abc import Callable
 from datetime import datetime
 
 import rich_click as click
-from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -18,23 +17,12 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
-from rich.table import Table
 
+from glom._compact import Column, apply_16kb_cap, compact_table
 from glom.db import Database
 from glom.indexer import index_all
 
 console = Console(stderr=True)
-
-_KIND_STYLE: dict[str, str] = {
-    "memory": "green",
-    "plan": "blue",
-    "task": "yellow",
-    "instructions": "magenta",
-    "settings": "cyan",
-    "skill": "red",
-    "session": "dim white",
-    "history": "dim yellow",
-}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -52,8 +40,22 @@ def _fts_error(exc: Exception) -> bool:
     return "fts5" in msg or "syntax" in msg or "parse" in msg
 
 
-def _highlight_snippet(text: str) -> str:
-    return text.replace("»", "[bold yellow]").replace("«", "[/bold yellow]")
+def _truncate(s: str, max_len: int) -> str:
+    return s if len(s) <= max_len else s[:max_len - 1] + "\u2026"
+
+
+def _json_envelope(
+    rows: list[dict],
+    total: int,
+    limit: int,
+) -> dict:
+    return {
+        "rows": rows,
+        "total": total,
+        "displayed": len(rows),
+        "truncated": len(rows) < total,
+        "limit": limit,
+    }
 
 
 def _make_index_progress_callbacks(
@@ -74,8 +76,6 @@ def _make_index_progress_callbacks(
         label = labels.get(phase, phase)
 
         if phase == "rebuilding":
-            # `total=None` does not clear an existing task total in Rich. Use a
-            # separate spinner task so rebuild does not look like a reset to 0/N.
             progress.update(index_task, visible=False)
             progress.update(rebuild_task, description=label, visible=True)
             return
@@ -151,6 +151,25 @@ def index(full: bool, as_json: bool) -> None:
 
 # ── search ───────────────────────────────────────────────────────────────────
 
+_SEARCH_COLUMNS: list[Column] = [
+    ("rank", "rank", {"align": "right", "max_width": 8}),
+    ("kind", "kind", {"max_width": 14}),
+    ("name", "name", {"max_width": 40}),
+    ("location", "location", {"max_width": 40}),
+    ("snippet", "snippet", {"max_width": 40}),
+]
+
+
+def _search_row(r, i: int) -> dict:
+    return {
+        "rank": i,
+        "kind": r.kind,
+        "name": r.title or r.path.rsplit("/", 1)[-1],
+        "location": r.path,
+        "snippet": r.snippet.replace("\u00bb", "").replace("\u00ab", ""),
+    }
+
+
 @main.command()
 @click.argument("query")
 @click.option("-k", "--kind", help="Filter by document kind.")
@@ -158,25 +177,28 @@ def index(full: bool, as_json: bool) -> None:
 @click.option("-s", "--source", type=click.Choice(["claude", "codex"]),
               help="Filter by source.")
 @click.option("-n", "--limit", default=10, show_default=True,
-              help="Maximum results.")
+              help="Maximum results.  0 = unlimited.")
+@click.option("--full", is_flag=True, help="Show multi-line detail per result.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
 def search(query: str, kind: str | None, project: str | None,
-           source: str | None, limit: int, as_json: bool) -> None:
+           source: str | None, limit: int, full: bool,
+           as_json: bool, json_legacy: bool) -> None:
     """Full-text search over the index (FTS5, BM25-ranked)."""
     db = Database()
     try:
-        results = db.search(
+        results, total = db.search(
             query, kind=kind, project=project, source=source, limit=limit,
         )
     except Exception as exc:
         if _fts_error(exc):
-            console.print(f"[red]Bad query:[/] {exc}")
+            click.echo(f"Bad query: {exc}", err=True)
             raise SystemExit(1) from None
         raise
     finally:
         db.close()
 
-    if as_json:
+    if json_legacy:
         click.echo(json.dumps([
             {"path": r.path, "kind": r.kind, "source": r.source,
              "project": r.project, "title": r.title,
@@ -185,26 +207,59 @@ def search(query: str, kind: str | None, project: str | None,
         ], indent=2))
         return
 
-    if not results:
-        console.print("[dim]No results.[/]")
+    if as_json:
+        rows = [_search_row(r, i) for i, r in enumerate(results, 1)]
+        click.echo(json.dumps(_json_envelope(rows, total, limit), indent=2))
         return
 
-    for i, r in enumerate(results, 1):
-        style = _KIND_STYLE.get(r.kind, "white")
-        header = (
-            f"[bold]{i:>3}[/]  [{style}]{r.kind:<14}[/]"
-            f"  [bold cyan]{r.title or '—'}[/]"
-        )
-        if r.project:
-            header += f"  [dim]({r.project})[/]"
-        console.print(header)
-        console.print(f"     [dim]{r.path}[/]")
-        if r.snippet:
-            console.print(f"     {_highlight_snippet(r.snippet)}")
-        console.print()
+    if not results:
+        click.echo("No results.")
+        return
+
+    if full:
+        lines: list[str] = []
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i:>3}  {r.kind:<14}  {r.title or '-'}")
+            lines.append(f"     {r.path}")
+            if r.snippet:
+                plain = r.snippet.replace("\u00bb", "").replace("\u00ab", "")
+                lines.append(f"     {plain}")
+            lines.append("")
+        output = "\n".join(lines) + "\n"
+        click.echo(apply_16kb_cap(output), nl=False)
+        return
+
+    row_dicts = [_search_row(r, i) for i, r in enumerate(results, 1)]
+    click.echo(compact_table(row_dicts, _SEARCH_COLUMNS, total=total), nl=False)
 
 
 # ── tools ────────────────────────────────────────────────────────────────────
+
+_TOOLS_NAMES_COLUMNS: list[Column] = [
+    ("tool", "tool", {"max_width": 40}),
+    ("count", "count", {"align": "right", "max_width": 10}),
+]
+
+_TOOLS_QUERY_COLUMNS: list[Column] = [
+    ("rank", "rank", {"align": "right", "max_width": 8}),
+    ("kind", "kind", {"max_width": 14}),
+    ("name", "name", {"max_width": 40}),
+    ("location", "location", {"max_width": 40}),
+    ("snippet", "snippet", {"max_width": 40}),
+]
+
+
+def _tool_call_row(r, i: int) -> dict:
+    snippet = r.input_snippet or r.output_snippet
+    snippet = snippet.replace("\u00bb", "").replace("\u00ab", "")
+    return {
+        "rank": i,
+        "kind": "tool",
+        "name": r.tool_name,
+        "location": r.session_path,
+        "snippet": _truncate(snippet, 40),
+    }
+
 
 @main.command()
 @click.argument("query", required=False)
@@ -213,50 +268,67 @@ def search(query: str, kind: str | None, project: str | None,
 @click.option("-p", "--project", help="Filter by project slug (substring).")
 @click.option("-s", "--source", type=click.Choice(["claude", "codex"]),
               help="Filter by source.")
-@click.option("-n", "--limit", default=10, show_default=True,
-              help="Maximum results.")
+@click.option("-n", "--limit", default=20, show_default=True,
+              help="Maximum results.  0 = unlimited.")
+@click.option("--full", is_flag=True,
+              help="Show all rows (--names) or multi-line detail (query).")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
 def tools(query: str | None, names: bool, tool_name: str | None,
           project: str | None, source: str | None,
-          limit: int, as_json: bool) -> None:
+          limit: int, full: bool, as_json: bool,
+          json_legacy: bool) -> None:
     """Search tool calls, or list tool names with --names."""
     db = Database()
 
     if names:
         counts = db.tool_name_counts()
         db.close()
-        if as_json:
+        items = list(counts.items())
+        total_items = len(items)
+        cap = 0 if full else limit
+        shown = items if cap <= 0 else items[:cap]
+
+        if json_legacy:
             click.echo(json.dumps(counts, indent=2))
             return
-        if not counts:
-            console.print("[dim]No tool calls indexed.  Run [bold]glom index --full[/bold].[/]")
+
+        if as_json:
+            rows = [{"tool": name, "count": count} for name, count in shown]
+            click.echo(json.dumps(
+                _json_envelope(rows, total_items, cap), indent=2,
+            ))
             return
-        tbl = Table(box=box.SIMPLE)
-        tbl.add_column("Tool", style="bold cyan")
-        tbl.add_column("Count", justify="right")
-        for name, count in counts.items():
-            tbl.add_row(name, f"{count:,}")
-        console.print(tbl)
+
+        if not counts:
+            click.echo("No tool calls indexed.  Run glom index --full.")
+            return
+
+        row_dicts = [{"tool": name, "count": count} for name, count in shown]
+        click.echo(compact_table(
+            row_dicts, _TOOLS_NAMES_COLUMNS, total=total_items,
+        ), nl=False)
         return
 
     if not query:
-        console.print("[red]Provide a QUERY, or use --names to list tools.[/]")
+        click.echo("Provide a QUERY, or use --names to list tools.", err=True)
         raise SystemExit(1)
 
+    # search uses --limit 10 default per spec, but tools query keeps 20
     try:
-        results = db.search_tool_calls(
+        results, total = db.search_tool_calls(
             query, tool_name=tool_name, project=project,
             source=source, limit=limit,
         )
     except Exception as exc:
         if _fts_error(exc):
-            console.print(f"[red]Bad query:[/] {exc}")
+            click.echo(f"Bad query: {exc}", err=True)
             raise SystemExit(1) from None
         raise
     finally:
         db.close()
 
-    if as_json:
+    if json_legacy:
         click.echo(json.dumps([
             {"tool_name": r.tool_name, "session_path": r.session_path,
              "source": r.source, "project": r.project,
@@ -269,27 +341,45 @@ def tools(query: str | None, names: bool, tool_name: str | None,
         ], indent=2))
         return
 
-    if not results:
-        console.print("[dim]No results.[/]")
+    if as_json:
+        rows = [_tool_call_row(r, i) for i, r in enumerate(results, 1)]
+        click.echo(json.dumps(_json_envelope(rows, total, limit), indent=2))
         return
 
-    for i, r in enumerate(results, 1):
-        header = f"[bold]{i:>3}[/]  [bold cyan]{r.tool_name}[/]"
-        header += f"  [dim]line {r.line_number}[/]"
-        if r.is_error:
-            header += "  [bold red]ERROR[/]"
-        if r.project:
-            header += f"  [dim]({r.project})[/]"
-        console.print(header)
-        console.print(f"     [dim]{r.session_path}[/]")
-        if r.input_snippet:
-            console.print(f"     [green]in:[/]  {_highlight_snippet(r.input_snippet)}")
-        if r.output_snippet:
-            console.print(f"     [yellow]out:[/] {_highlight_snippet(r.output_snippet)}")
-        console.print()
+    if not results:
+        click.echo("No results.")
+        return
+
+    if full:
+        lines: list[str] = []
+        for i, r in enumerate(results, 1):
+            err = " ERROR" if r.is_error else ""
+            lines.append(f"{i:>3}  {r.tool_name}  line {r.line_number}{err}")
+            lines.append(f"     {r.session_path}")
+            if r.input_snippet:
+                plain = r.input_snippet.replace("\u00bb", "").replace("\u00ab", "")
+                lines.append(f"     in:  {plain}")
+            if r.output_snippet:
+                plain = r.output_snippet.replace("\u00bb", "").replace("\u00ab", "")
+                lines.append(f"     out: {plain}")
+            lines.append("")
+        output = "\n".join(lines) + "\n"
+        click.echo(apply_16kb_cap(output), nl=False)
+        return
+
+    row_dicts = [_tool_call_row(r, i) for i, r in enumerate(results, 1)]
+    click.echo(compact_table(
+        row_dicts, _TOOLS_QUERY_COLUMNS, total=total,
+    ), nl=False)
 
 
 # ── stats ────────────────────────────────────────────────────────────────────
+
+_STATS_COLUMNS: list[Column] = [
+    ("metric", "metric", {"max_width": 20}),
+    ("value", "value", {"align": "right", "max_width": 20}),
+]
+
 
 @main.command()
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
@@ -304,36 +394,31 @@ def stats(as_json: bool) -> None:
         return
 
     if not s["total"]:
-        console.print("[dim]Index is empty.  Run [bold]glom index[/bold] first.[/]")
+        click.echo("Index is empty.  Run glom index first.")
         return
 
-    tbl = Table(title="glom index", box=box.SIMPLE)
-    tbl.add_column("", style="bold")
-    tbl.add_column("", justify="right")
-
-    tbl.add_row("Documents", str(s["total"]))
-    for kind, count in s["by_kind"].items():
-        style = _KIND_STYLE.get(kind, "white")
-        tbl.add_row(f"  [{style}]{kind}[/]", str(count))
-    tbl.add_row("", "")
+    rows: list[dict] = []
+    rows.append({"metric": "Documents", "value": str(s["total"])})
+    for kind_name, count in s["by_kind"].items():
+        rows.append({"metric": f"  {kind_name}", "value": str(count)})
     for src, count in s["by_source"].items():
-        tbl.add_row(f"  {src}", str(count))
-    tbl.add_row("", "")
-    tbl.add_row("Tool calls", f"{s['tool_calls']:,}")
-    tbl.add_row("Content", _human(s["total_content_bytes"]))
-    tbl.add_row("Database", _human(s["db_bytes"]))
+        rows.append({"metric": f"  {src}", "value": str(count)})
+    rows.append({"metric": "Tool calls", "value": f"{s['tool_calls']:,}"})
+    rows.append({"metric": "Content", "value": _human(s["total_content_bytes"])})
+    rows.append({"metric": "Database", "value": _human(s["db_bytes"])})
     if s["last_indexed"]:
         ts = datetime.fromtimestamp(s["last_indexed"]).strftime("%Y-%m-%d %H:%M:%S")
-        tbl.add_row("Last indexed", ts)
+        rows.append({"metric": "Last indexed", "value": ts})
 
-    console.print(tbl)
+    click.echo(compact_table(rows, _STATS_COLUMNS), nl=False)
 
 
 # ── show ─────────────────────────────────────────────────────────────────────
 
 @main.command()
 @click.argument("path")
-@click.option("--full", is_flag=True, help="Show full content (no truncation).")
+@click.option("--full", is_flag=True,
+              help="Show full content without truncation (default truncates to 4000 chars).")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
 def show(path: str, full: bool, as_json: bool) -> None:
     """Display a specific indexed document (exact or suffix match on PATH)."""
@@ -342,11 +427,15 @@ def show(path: str, full: bool, as_json: bool) -> None:
     db.close()
 
     if not doc:
-        console.print(f"[red]Not found:[/] {path}")
+        click.echo(f"Not found: {path}", err=True)
         raise SystemExit(1)
 
     if as_json:
-        click.echo(json.dumps(dict(doc), indent=2, default=str))
+        d = dict(doc)
+        if not full and isinstance(d.get("content"), str) and len(d["content"]) > 4000:
+            d["content"] = d["content"][:4000]
+            d["_truncated"] = True
+        click.echo(json.dumps(d, indent=2, default=str))
         return
 
     content = doc["content"]
@@ -355,10 +444,11 @@ def show(path: str, full: bool, as_json: bool) -> None:
         content = content[:4000]
         truncated = True
 
-    style = _KIND_STYLE.get(doc["kind"], "white")
-    console.print(Panel(
-        content + ("\n[dim]… truncated (use --full)[/]" if truncated else ""),
-        title=f"[{style}]{doc['kind']}[/] · {doc['title'] or doc['path']}",
-        subtitle=f"[dim]{_human(doc['size'])} · {doc['source']}[/]",
-        expand=True,
-    ))
+    header = f"{doc['kind']} | {doc['title'] or doc['path']}"
+    footer = f"{_human(doc['size'])} | {doc['source']}"
+    lines = [header, "-" * len(header), content]
+    if truncated:
+        lines.append("... truncated (use --full)")
+    lines.append(footer)
+    output = "\n".join(lines) + "\n"
+    click.echo(apply_16kb_cap(output) if full else output, nl=False)

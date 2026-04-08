@@ -323,30 +323,40 @@ class Database:
         project: str | None = None,
         source: str | None = None,
         limit: int = 10,
-    ) -> list[SearchResult]:
-        sql = """\
-            SELECT d.path, d.kind, d.source, d.project, d.title, d.size,
-                   snippet(documents_fts, 1, '»', '«', ' … ', 48) AS snippet,
-                   rank
-            FROM documents_fts
-            JOIN documents d ON d.id = documents_fts.rowid
-            WHERE documents_fts MATCH ?"""
+    ) -> tuple[list[SearchResult], int]:
+        """Return (results, total_matching_count)."""
+        where = "WHERE documents_fts MATCH ?"
         params: list[str | int] = [query]
 
         if kind:
-            sql += " AND d.kind = ?"
+            where += " AND d.kind = ?"
             params.append(kind)
         if project:
-            sql += " AND d.project LIKE ?"
+            where += " AND d.project LIKE ?"
             params.append(f"%{project}%")
         if source:
-            sql += " AND d.source = ?"
+            where += " AND d.source = ?"
             params.append(source)
 
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(limit)
+        count_sql = (
+            "SELECT COUNT(*) AS n FROM documents_fts "
+            "JOIN documents d ON d.id = documents_fts.rowid " + where
+        )
+        total = self._conn.execute(count_sql, params).fetchone()["n"]
 
-        return [
+        sql = (
+            "SELECT d.path, d.kind, d.source, d.project, d.title, d.size,"
+            " snippet(documents_fts, 1, '\u00bb', '\u00ab', ' \u2026 ', 48) AS snippet,"
+            " rank"
+            " FROM documents_fts"
+            " JOIN documents d ON d.id = documents_fts.rowid "
+            + where + " ORDER BY rank"
+        )
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+
+        results = [
             SearchResult(
                 path=r["path"], kind=r["kind"], source=r["source"],
                 project=r["project"], title=r["title"],
@@ -354,6 +364,7 @@ class Database:
             )
             for r in self._conn.execute(sql, params).fetchall()
         ]
+        return results, total
 
     def get_document(self, path: str) -> sqlite3.Row | None:
         return self._conn.execute(
@@ -380,32 +391,44 @@ class Database:
         project: str | None = None,
         source: str | None = None,
         limit: int = 10,
-    ) -> list[ToolCallRow]:
-        sql = """\
-            SELECT tc.session_path, tc.source, tc.project, tc.tool_name,
-                   tc.call_id, tc.is_error, tc.line_number,
-                   snippet(tool_calls_fts, 1, '»', '«', ' … ', 48) AS input_snippet,
-                   snippet(tool_calls_fts, 2, '»', '«', ' … ', 48) AS output_snippet,
-                   rank
-            FROM tool_calls_fts
-            JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid
-            WHERE tool_calls_fts MATCH ?"""
+    ) -> tuple[list[ToolCallRow], int]:
+        """Return (results, total_matching_count)."""
+        where = "WHERE tool_calls_fts MATCH ?"
         params: list[str | int] = [query]
 
         if tool_name:
-            sql += " AND tc.tool_name = ?"
+            where += " AND tc.tool_name = ?"
             params.append(tool_name)
         if project:
-            sql += " AND tc.project LIKE ?"
+            where += " AND tc.project LIKE ?"
             params.append(f"%{project}%")
         if source:
-            sql += " AND tc.source = ?"
+            where += " AND tc.source = ?"
             params.append(source)
 
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(limit)
+        count_sql = (
+            "SELECT COUNT(*) AS n FROM tool_calls_fts "
+            "JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid " + where
+        )
+        total = self._conn.execute(count_sql, params).fetchone()["n"]
 
-        return [
+        sql = (
+            "SELECT tc.session_path, tc.source, tc.project, tc.tool_name,"
+            " tc.call_id, tc.is_error, tc.line_number,"
+            " snippet(tool_calls_fts, 1, '\u00bb', '\u00ab', ' \u2026 ', 48)"
+            " AS input_snippet,"
+            " snippet(tool_calls_fts, 2, '\u00bb', '\u00ab', ' \u2026 ', 48)"
+            " AS output_snippet,"
+            " rank"
+            " FROM tool_calls_fts"
+            " JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid "
+            + where + " ORDER BY rank"
+        )
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+
+        results = [
             ToolCallRow(
                 session_path=r["session_path"], source=r["source"],
                 project=r["project"], tool_name=r["tool_name"],
@@ -417,6 +440,7 @@ class Database:
             )
             for r in self._conn.execute(sql, params).fetchall()
         ]
+        return results, total
 
     def tool_name_counts(self) -> dict[str, int]:
         return {
