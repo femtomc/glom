@@ -1,4 +1,4 @@
-"""Canonical compact-table formatter (Phase 2 spec, rev 12)."""
+"""Canonical compact-table formatter (canonical compact-format spec)."""
 
 from __future__ import annotations
 
