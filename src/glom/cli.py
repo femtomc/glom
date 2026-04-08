@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 
 import rich_click as click
@@ -55,6 +56,36 @@ def _highlight_snippet(text: str) -> str:
     return text.replace("»", "[bold yellow]").replace("«", "[/bold yellow]")
 
 
+def _make_index_progress_callbacks(
+    progress: Progress,
+) -> tuple[int, int, Callable[[int, int], None], Callable[[str], None]]:
+    index_task = progress.add_task("Scanning", total=None)
+    rebuild_task = progress.add_task("Rebuilding FTS", total=None, visible=False)
+
+    def on_progress(done: int, total: int) -> None:
+        progress.update(index_task, completed=done, total=total)
+
+    def on_phase(phase: str) -> None:
+        labels = {
+            "scanning": "Scanning",
+            "indexing": "Indexing",
+            "rebuilding": "Rebuilding FTS",
+        }
+        label = labels.get(phase, phase)
+
+        if phase == "rebuilding":
+            # `total=None` does not clear an existing task total in Rich. Use a
+            # separate spinner task so rebuild does not look like a reset to 0/N.
+            progress.update(index_task, visible=False)
+            progress.update(rebuild_task, description=label, visible=True)
+            return
+
+        progress.update(rebuild_task, visible=False)
+        progress.update(index_task, description=label, visible=True)
+
+    return index_task, rebuild_task, on_progress, on_phase
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -81,23 +112,7 @@ def index(full: bool, as_json: bool) -> None:
         console=console,
         disable=as_json,
     ) as progress:
-        task = progress.add_task("Scanning", total=None)
-
-        def on_progress(done: int, total: int) -> None:
-            progress.update(task, completed=done, total=total)
-
-        def on_phase(phase: str) -> None:
-            labels = {
-                "scanning": "Scanning",
-                "indexing": "Indexing",
-                "rebuilding": "Rebuilding FTS",
-            }
-            label = labels.get(phase, phase)
-            if phase == "rebuilding":
-                # indeterminate spinner while FTS rebuilds
-                progress.update(task, description=label, completed=0, total=None)
-            else:
-                progress.update(task, description=label)
+        _, _, on_progress, on_phase = _make_index_progress_callbacks(progress)
 
         stats = index_all(
             db, full=full,

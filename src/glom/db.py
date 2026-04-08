@@ -164,8 +164,9 @@ class Database:
     def __init__(self, path: Path | None = None):
         self.path = path or _default_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path))
+        self._conn = sqlite3.connect(str(self.path), timeout=30.0)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA busy_timeout = 30000")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_TABLES + _FTS + _TRIGGERS)
 
@@ -178,6 +179,9 @@ class Database:
     def _set_journal_mode(self, mode: str) -> None:
         self._conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
 
+    def _journal_mode(self) -> str:
+        return str(self._conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
     # -- bulk mode ------------------------------------------------------------
 
     def begin_bulk(self) -> None:
@@ -187,11 +191,21 @@ class Database:
         trade crash recovery for much faster inserts and FTS rebuilds.
         """
         self._conn.executescript(_DROP_TRIGGERS)
-        self._set_journal_mode("MEMORY")
-        self._conn.execute("PRAGMA locking_mode = EXCLUSIVE").fetchone()
         self._conn.execute("PRAGMA temp_store = MEMORY")
         self._conn.execute("PRAGMA cache_size = -65536")    # 64 MB
         self._conn.execute("PRAGMA synchronous = OFF")
+        original_journal_mode = self._journal_mode()
+
+        try:
+            self._set_journal_mode("MEMORY")
+            self._conn.execute("PRAGMA locking_mode = EXCLUSIVE").fetchone()
+        except sqlite3.OperationalError:
+            # A concurrent reader can block the journal-mode switch. Keep the
+            # cheaper trigger-free bulk path, but fall back to WAL so indexing
+            # proceeds instead of aborting.
+            if self._journal_mode() != original_journal_mode:
+                self._set_journal_mode(original_journal_mode.upper())
+            self._conn.execute("PRAGMA locking_mode = NORMAL").fetchone()
 
     def end_bulk(self) -> None:
         """Rebuild both FTS indices from content tables, restore triggers."""
