@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ _HEX_RE = re.compile(r"^[0-9a-f]{16,}$", re.I)
 # If more than this many files need writing, drop FTS triggers and rebuild
 # at the end instead of maintaining the index per-row.
 _BULK_THRESHOLD = 100
+_DIAGNOSTIC_LIMIT = 5
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +36,11 @@ class IndexStats:
     deleted: int = 0
     errors: int = 0
     tool_calls_extracted: int = 0
+    malformed_jsonl_lines: int = 0
+    parse_errors: dict[str, int] = field(default_factory=dict)
+    largest_files: list[dict[str, int | float | str]] = field(default_factory=list)
+    slowest_files: list[dict[str, int | float | str]] = field(default_factory=list)
+    tool_call_files: list[dict[str, int | float | str]] = field(default_factory=list)
     error_paths: list[str] = field(default_factory=list)
 
     @property
@@ -51,6 +58,21 @@ class FileEntry:
     source: str
     kind: str
     project: str | None
+
+
+@dataclass(slots=True)
+class ParseDiagnostics:
+    malformed_jsonl_lines: int = 0
+
+
+def _record_top(
+    rows: list[dict[str, int | float | str]],
+    row: dict[str, int | float | str],
+    key: str,
+) -> None:
+    rows.append(row)
+    rows.sort(key=lambda item: float(item[key]), reverse=True)
+    del rows[_DIAGNOSTIC_LIMIT:]
 
 
 def _add(entries: list[FileEntry], path: Path, source: str, kind: str,
@@ -123,6 +145,16 @@ def discover(
         if skills.is_dir():
             for sf in sorted(skills.rglob("*.md")):
                 entries.append(FileEntry(sf, "codex", "skill", None))
+
+        memories = codex / "memories"
+        if memories.is_dir():
+            for mf in sorted(memories.glob("*.md")):
+                entries.append(FileEntry(mf, "codex", "memory", None))
+
+            rollout_summaries = memories / "rollout_summaries"
+            if rollout_summaries.is_dir():
+                for rf in sorted(rollout_summaries.glob("*.md")):
+                    entries.append(FileEntry(rf, "codex", "memory", None))
 
         sessions = codex / "sessions"
         if sessions.is_dir():
@@ -354,10 +386,18 @@ def _extract_codex_calls(
 def _parse_session(
     path: Path, source: str
 ) -> tuple[str, str, list[_ToolTuple]]:
+    title, content, calls, _diag = _parse_session_with_diagnostics(path, source)
+    return title, content, calls
+
+
+def _parse_session_with_diagnostics(
+    path: Path, source: str
+) -> tuple[str, str, list[_ToolTuple], ParseDiagnostics]:
     """Single-pass JSONL reader: extracts both document text and tool calls."""
     text_parts: list[str] = []
     pending: dict[str, list] = {}
     finished: list[_ToolTuple] = []
+    diagnostics = ParseDiagnostics()
     extractor = _extract_claude_calls if source == "claude" else _extract_codex_calls
     text_extractor = (
         _collect_claude_session_text if source == "claude" else _collect_codex_session_text
@@ -371,6 +411,7 @@ def _parse_session(
             try:
                 obj = json.loads(raw)
             except (json.JSONDecodeError, RecursionError):
+                diagnostics.malformed_jsonl_lines += 1
                 continue
             text_extractor(obj, text_parts)
             finished.extend(extractor(obj, pending, line_num))
@@ -379,22 +420,25 @@ def _parse_session(
     for entry in pending.values():
         finished.append(tuple(entry))  # type: ignore[arg-type]
 
-    return path.stem, "\n".join(text_parts), finished
+    return path.stem, "\n".join(text_parts), finished, diagnostics
 
 
 # ---------------------------------------------------------------------------
 # Top-level parse dispatch
 # ---------------------------------------------------------------------------
 
-def parse_file(entry: FileEntry) -> tuple[Document, list[_ToolTuple]]:
+def parse_file(entry: FileEntry) -> tuple[Document, list[_ToolTuple], ParseDiagnostics]:
     """Turn a discovered file into a Document (and tool calls for sessions)."""
     path = entry.path
     stat = path.stat()
     metadata: str | None = None
     tool_calls: list[_ToolTuple] = []
+    diagnostics = ParseDiagnostics()
 
     if entry.kind in ("session", "history"):
-        title, content, tool_calls = _parse_session(path, entry.source)
+        title, content, tool_calls, diagnostics = _parse_session_with_diagnostics(
+            path, entry.source
+        )
     elif entry.kind == "task":
         text = path.read_text(errors="replace")
         title, content = _parse_json_task(text, path.name)
@@ -421,7 +465,7 @@ def parse_file(entry: FileEntry) -> tuple[Document, list[_ToolTuple]]:
         mtime=stat.st_mtime,
         size=stat.st_size,
     )
-    return doc, tool_calls
+    return doc, tool_calls, diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -488,15 +532,34 @@ def index_all(
     try:
         for i, item in enumerate(work):
             try:
-                doc, tool_calls = parse_file(item.entry)
+                started = time.perf_counter()
+                doc, tool_calls, diagnostics = parse_file(item.entry)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
                 db.upsert(doc)
+                stats.malformed_jsonl_lines += diagnostics.malformed_jsonl_lines
+                _record_top(
+                    stats.largest_files,
+                    {"path": doc.path, "bytes": doc.size},
+                    "bytes",
+                )
+                _record_top(
+                    stats.slowest_files,
+                    {"path": doc.path, "milliseconds": round(elapsed_ms, 3)},
+                    "milliseconds",
+                )
 
-                if tool_calls:
+                if item.entry.kind in ("session", "history"):
                     db.replace_tool_calls(
                         str(item.entry.path), item.entry.source,
                         item.entry.project, tool_calls,
                     )
                     stats.tool_calls_extracted += len(tool_calls)
+                    if tool_calls:
+                        _record_top(
+                            stats.tool_call_files,
+                            {"path": doc.path, "tool_calls": len(tool_calls)},
+                            "tool_calls",
+                        )
 
                 if item.is_new:
                     stats.new += 1
@@ -504,6 +567,8 @@ def index_all(
                     stats.updated += 1
             except Exception as exc:
                 stats.errors += 1
+                error_key = f"{item.entry.source}:{item.entry.kind}"
+                stats.parse_errors[error_key] = stats.parse_errors.get(error_key, 0) + 1
                 stats.error_paths.append(f"{item.entry.path}: {exc}")
 
             _tick(on_progress, i + 1, len(work))

@@ -37,10 +37,13 @@ uv tool install git+https://github.com/femtomc/glom
 ```
 glom index          # incremental (mtime-based, skips unchanged files)
 glom index --full   # force full re-index
+glom index --json   # include diagnostics for agents
 ```
 
 Bulk mode (deferred FTS rebuild) activates automatically when >100 files
-need processing.
+need processing. JSON output reports skipped malformed JSONL lines, parse
+errors by source/kind, slowest files, largest files, and sessions with the
+most extracted tool calls.
 
 ### Search documents
 
@@ -49,17 +52,36 @@ glom search "bellman orchestration"
 glom search "feedback" -k memory          # filter by kind
 glom search "monadic core" -p tiny        # filter by project slug
 glom search "protocol" -s claude -n 5     # filter by source, limit results
+glom search "renderer" --repo synth       # filter project slug or path
+glom search "release" --since 2026-04-01  # filter by file mtime
+glom search "macro" --path memories       # filter by path substring
 glom search "deploy" --json               # structured output for agents
 ```
 
 Kinds: `memory`, `plan`, `task`, `session`, `skill`, `instructions`,
 `settings`, `history`.
 
+Search output includes short refs like `@1`.  Refs persist in the local index,
+so `glom show @1` displays the first document from the most recent document
+search or context command.
+
+### Bundle context
+
+```
+glom context "benchmark suites" --repo synth
+glom context "git status" --path sessions --json
+```
+
+`context` returns ranked document hits with nearby transcript/document lines.
+For session documents it also includes tool calls from the same session.
+
 ### Search tool calls
 
 ```
 glom tools "git push" -t Bash             # search Bash calls for "git push"
 glom tools '"pyproject.toml"' -t Read     # phrase search (FTS5 syntax)
+glom tools "zig build" --repo synth       # filter project slug or path
+glom tools "error" --since 2026-04-01     # filter by session file mtime
 glom tools --names                        # list all tool names with counts
 glom tools "error" --json                 # JSON output
 ```
@@ -68,8 +90,12 @@ glom tools "error" --json                 # JSON output
 
 ```
 glom stats                                # index statistics
-glom show ~/.claude/projects/.../memory/MEMORY.md   # display a document
+glom doctor                               # source-root and DB health checks
+glom optimize                             # FTS optimize + WAL checkpoint
+glom optimize --rebuild-fts --vacuum      # heavier DB maintenance
+glom show ~/.codex/memories/MEMORY.md               # display a document
 glom show MEMORY.md                       # suffix match
+glom show @1                              # last search/context result ref
 ```
 
 All commands support `--json` for agent consumption.
@@ -79,7 +105,7 @@ All commands support `--json` for agent consumption.
 | Kind | Source files |
 |---|---|
 | `session` | `projects/*/*.jsonl`, `sessions/*/*/*/*.jsonl` |
-| `memory` | `projects/*/memory/*.md` |
+| `memory` | `projects/*/memory/*.md`, `memories/*.md`, `memories/rollout_summaries/*.md` |
 | `plan` | `plans/*.md` |
 | `task` | `tasks/*/*.json` |
 | `skill` | `skills/*/SKILL.md` |

@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS idx_tc_session ON tool_calls(session_path);
 CREATE INDEX IF NOT EXISTS idx_tc_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_documents_path_mtime ON documents(path, mtime);
+
+CREATE TABLE IF NOT EXISTS search_refs (
+    scope TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (scope, ordinal)
+);
 """
 
 _FTS = """\
@@ -250,6 +258,16 @@ class Database:
             for r in self._conn.execute("SELECT path FROM documents").fetchall()
         }
 
+    def fts5_available(self) -> bool:
+        try:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE temp.glom_fts5_probe USING fts5(value)"
+            )
+            self._conn.execute("DROP TABLE temp.glom_fts5_probe")
+        except sqlite3.OperationalError:
+            return False
+        return True
+
     # -- document mutations ---------------------------------------------------
 
     def upsert(self, doc: Document) -> None:
@@ -283,6 +301,36 @@ class Database:
         )
         self._conn.commit()
 
+    def optimize(self, *, rebuild_fts: bool = False, vacuum: bool = False) -> dict:
+        before = self.path.stat().st_size if self.path.exists() else 0
+        if rebuild_fts:
+            self.rebuild_fts()
+        else:
+            self._conn.execute(
+                "INSERT INTO documents_fts(documents_fts) VALUES('optimize')"
+            )
+            self._conn.execute(
+                "INSERT INTO tool_calls_fts(tool_calls_fts) VALUES('optimize')"
+            )
+            self._conn.commit()
+
+        checkpoint = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if vacuum:
+            self._conn.execute("VACUUM")
+        after = self.path.stat().st_size if self.path.exists() else 0
+        return {
+            "db_path": str(self.path),
+            "rebuild_fts": rebuild_fts,
+            "vacuum": vacuum,
+            "db_bytes_before": before,
+            "db_bytes_after": after,
+            "wal_checkpoint": {
+                "busy": checkpoint[0],
+                "log": checkpoint[1],
+                "checkpointed": checkpoint[2],
+            },
+        }
+
     # -- tool-call mutations --------------------------------------------------
 
     def replace_tool_calls(
@@ -313,6 +361,32 @@ class Database:
         )
         return len(calls)
 
+    # -- result refs -----------------------------------------------------------
+
+    def save_search_refs(self, scope: str, targets: list[str]) -> None:
+        now = time.time()
+        self._conn.execute("DELETE FROM search_refs WHERE scope = ?", (scope,))
+        self._conn.executemany(
+            """\
+            INSERT INTO search_refs (scope, ordinal, target, created_at)
+            VALUES (?, ?, ?, ?)""",
+            [(scope, i, target, now) for i, target in enumerate(targets, 1)],
+        )
+        self._conn.commit()
+
+    def resolve_search_ref(self, scope: str, ref: str) -> str | None:
+        if not ref.startswith("@"):
+            return None
+        try:
+            ordinal = int(ref[1:])
+        except ValueError:
+            return None
+        row = self._conn.execute(
+            "SELECT target FROM search_refs WHERE scope = ? AND ordinal = ?",
+            (scope, ordinal),
+        ).fetchone()
+        return row["target"] if row else None
+
     # -- document queries -----------------------------------------------------
 
     def search(
@@ -321,12 +395,16 @@ class Database:
         *,
         kind: str | None = None,
         project: str | None = None,
+        repo: str | None = None,
         source: str | None = None,
+        path_fragment: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
         limit: int = 10,
     ) -> tuple[list[SearchResult], int]:
         """Return (results, total_matching_count)."""
         where = "WHERE documents_fts MATCH ?"
-        params: list[str | int] = [query]
+        params: list[str | int | float] = [query]
 
         if kind:
             where += " AND d.kind = ?"
@@ -334,9 +412,21 @@ class Database:
         if project:
             where += " AND d.project LIKE ?"
             params.append(f"%{project}%")
+        if repo:
+            where += " AND (d.project LIKE ? OR d.path LIKE ?)"
+            params.extend([f"%{repo}%", f"%{repo}%"])
         if source:
             where += " AND d.source = ?"
             params.append(source)
+        if path_fragment:
+            where += " AND d.path LIKE ?"
+            params.append(f"%{path_fragment}%")
+        if since is not None:
+            where += " AND d.mtime >= ?"
+            params.append(since)
+        if until is not None:
+            where += " AND d.mtime <= ?"
+            params.append(until)
 
         count_sql = (
             "SELECT COUNT(*) AS n FROM documents_fts "
@@ -389,12 +479,16 @@ class Database:
         *,
         tool_name: str | None = None,
         project: str | None = None,
+        repo: str | None = None,
         source: str | None = None,
+        path_fragment: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
         limit: int = 10,
     ) -> tuple[list[ToolCallRow], int]:
         """Return (results, total_matching_count)."""
         where = "WHERE tool_calls_fts MATCH ?"
-        params: list[str | int] = [query]
+        params: list[str | int | float] = [query]
 
         if tool_name:
             where += " AND tc.tool_name = ?"
@@ -402,13 +496,27 @@ class Database:
         if project:
             where += " AND tc.project LIKE ?"
             params.append(f"%{project}%")
+        if repo:
+            where += " AND (tc.project LIKE ? OR tc.session_path LIKE ?)"
+            params.extend([f"%{repo}%", f"%{repo}%"])
         if source:
             where += " AND tc.source = ?"
             params.append(source)
+        if path_fragment:
+            where += " AND tc.session_path LIKE ?"
+            params.append(f"%{path_fragment}%")
+        if since is not None:
+            where += " AND COALESCE(d.mtime, 0) >= ?"
+            params.append(since)
+        if until is not None:
+            where += " AND COALESCE(d.mtime, 0) <= ?"
+            params.append(until)
 
         count_sql = (
             "SELECT COUNT(*) AS n FROM tool_calls_fts "
-            "JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid " + where
+            "JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid "
+            "LEFT JOIN documents d ON d.path = tc.session_path "
+            + where
         )
         total = self._conn.execute(count_sql, params).fetchone()["n"]
 
@@ -422,6 +530,7 @@ class Database:
             " rank"
             " FROM tool_calls_fts"
             " JOIN tool_calls tc ON tc.id = tool_calls_fts.rowid "
+            " LEFT JOIN documents d ON d.path = tc.session_path "
             + where + " ORDER BY rank"
         )
         if limit > 0:
@@ -441,6 +550,37 @@ class Database:
             for r in self._conn.execute(sql, params).fetchall()
         ]
         return results, total
+
+    def tool_calls_for_session(
+        self,
+        session_path: str,
+        *,
+        limit: int = 5,
+    ) -> list[ToolCallRow]:
+        sql = (
+            "SELECT session_path, source, project, tool_name, call_id,"
+            " is_error, line_number,"
+            " substr(input, 1, 240) AS input_snippet,"
+            " substr(output, 1, 240) AS output_snippet"
+            " FROM tool_calls WHERE session_path = ?"
+            " ORDER BY COALESCE(line_number, 0), id"
+        )
+        params: list[str | int] = [session_path]
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [
+            ToolCallRow(
+                session_path=r["session_path"], source=r["source"],
+                project=r["project"], tool_name=r["tool_name"],
+                call_id=r["call_id"],
+                input_snippet=r["input_snippet"] or "",
+                output_snippet=r["output_snippet"] or "",
+                is_error=bool(r["is_error"]),
+                line_number=r["line_number"], rank=0.0,
+            )
+            for r in self._conn.execute(sql, params).fetchall()
+        ]
 
     def tool_name_counts(self) -> dict[str, int]:
         return {

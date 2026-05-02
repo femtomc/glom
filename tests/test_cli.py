@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 from rich.progress import Progress
 
 from glom._compact import compact_table
-from glom.cli import _make_index_progress_callbacks, main
+from glom.cli import _doctor_report, _make_index_progress_callbacks, main
 
 
 def _task(progress: Progress, task_id: int):
@@ -36,6 +39,35 @@ class IndexProgressTests(unittest.TestCase):
             self.assertTrue(rebuild_task.visible)
             self.assertIsNone(rebuild_task.total)
             self.assertEqual(rebuild_task.description, "Rebuilding FTS")
+
+
+class DoctorTests(unittest.TestCase):
+    def test_doctor_reports_missing_index_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_root = root / ".claude"
+            codex_root = root / ".codex"
+            memories = codex_root / "memories"
+            claude_root.mkdir()
+            memories.mkdir(parents=True)
+            (claude_root / "CLAUDE.md").write_text("# Claude\n")
+            (memories / "MEMORY.md").write_text("# Memory\n")
+
+            old_db = os.environ.get("GLOM_DB")
+            os.environ["GLOM_DB"] = str(root / "index.db")
+            try:
+                report = _doctor_report(claude_root, codex_root)
+            finally:
+                if old_db is None:
+                    os.environ.pop("GLOM_DB", None)
+                else:
+                    os.environ["GLOM_DB"] = old_db
+
+            self.assertTrue(report["fts5"])
+            self.assertEqual(report["discoverable"]["total"], 2)
+            self.assertEqual(report["indexed"]["total"], 0)
+            self.assertEqual(report["missing_from_index"]["count"], 2)
+            self.assertTrue(report["needs_index"])
 
 
 class ShowJsonTests(unittest.TestCase):
@@ -67,6 +99,18 @@ class ShowJsonTests(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(len(data["content"]), 10000)
         self.assertNotIn("_truncated", data)
+
+    def test_show_resolves_last_search_ref(self) -> None:
+        runner = CliRunner()
+        with patch("glom.cli.Database") as MockDB:
+            instance = MockDB.return_value
+            instance.resolve_search_ref.return_value = "/tmp/test.jsonl"
+            instance.find_document.return_value = self._DOC
+            result = runner.invoke(main, ["show", "@1", "--json"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        instance.resolve_search_ref.assert_called_once_with("documents", "@1")
+        instance.find_document.assert_called_once_with("/tmp/test.jsonl")
 
 
 class ToolsNamesLimitTests(unittest.TestCase):
@@ -154,8 +198,22 @@ class SearchCompactTests(unittest.TestCase):
     def test_compact_has_canonical_columns(self) -> None:
         out = self._run_search()
         header = out.splitlines()[0]
-        for col in ("rank", "kind", "name", "location", "snippet"):
+        for col in ("ref", "rank", "kind", "name", "location", "snippet"):
             self.assertIn(col, header)
+
+    def test_search_saves_refs(self) -> None:
+        runner = CliRunner()
+        results = [self._make_result(i) for i in range(3)]
+        with patch("glom.cli.Database") as MockDB:
+            instance = MockDB.return_value
+            instance.search.return_value = (results, 3)
+            result = runner.invoke(main, ["search", "test"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        instance.save_search_refs.assert_called_once_with(
+            "documents",
+            [r.path for r in results],
+        )
 
     def test_no_trailing_whitespace(self) -> None:
         for line in self._run_search().splitlines():
@@ -180,6 +238,50 @@ class SearchCompactTests(unittest.TestCase):
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 5)
         self.assertIn("path", data[0])
+
+
+class ContextCommandTests(unittest.TestCase):
+    def test_context_json_includes_window_and_tool_calls(self) -> None:
+        result_row = MagicMock()
+        result_row.path = "/tmp/session.jsonl"
+        result_row.kind = "session"
+        result_row.source = "codex"
+        result_row.project = None
+        result_row.title = "session"
+        result_row.snippet = "found needle"
+        result_row.rank = 0.0
+        result_row.size = 100
+
+        tool_row = MagicMock()
+        tool_row.tool_name = "shell"
+        tool_row.line_number = 4
+        tool_row.is_error = False
+        tool_row.input_snippet = '{"cmd":"git status"}'
+        tool_row.output_snippet = "clean"
+
+        runner = CliRunner()
+        with patch("glom.cli.Database") as MockDB:
+            instance = MockDB.return_value
+            instance.search.return_value = ([result_row], 1)
+            instance.get_document.return_value = {
+                "content": "before\nneedle appears here\nafter\n",
+            }
+            instance.tool_calls_for_session.return_value = [tool_row]
+            invoke_result = runner.invoke(
+                main,
+                ["context", "needle", "--json"],
+            )
+
+        self.assertEqual(invoke_result.exit_code, 0, invoke_result.output)
+        data = json.loads(invoke_result.output)
+        self.assertEqual(data["displayed"], 1)
+        self.assertEqual(data["rows"][0]["ref"], "@1")
+        self.assertIn("needle appears here", data["rows"][0]["context"])
+        self.assertEqual(data["rows"][0]["tool_calls"][0]["tool"], "shell")
+        instance.save_search_refs.assert_called_once_with(
+            "documents",
+            ["/tmp/session.jsonl"],
+        )
 
 
 class CompactTableTests(unittest.TestCase):

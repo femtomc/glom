@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from glom.indexer import _parse_session, index_all
+from glom.db import Database
+from glom.indexer import _parse_session, discover, index_all
 
 
 class FakeDB:
@@ -47,6 +49,39 @@ class FakeDB:
 
 
 class IndexAllTests(unittest.TestCase):
+    def test_discover_indexes_codex_memory_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_root = root / ".codex"
+            memories = codex_root / "memories"
+            rollout_summaries = memories / "rollout_summaries"
+            rollout_summaries.mkdir(parents=True)
+
+            memory = memories / "MEMORY.md"
+            summary = memories / "memory_summary.md"
+            rollout = rollout_summaries / "rollout.md"
+            memory.write_text("# Memory\n")
+            summary.write_text("# Summary\n")
+            rollout.write_text("# Rollout\n")
+
+            entries = discover(
+                claude_root=root / ".claude",
+                codex_root=codex_root,
+            )
+
+            memory_entries = {
+                entry.path: entry
+                for entry in entries
+                if entry.kind == "memory"
+            }
+            self.assertEqual(
+                set(memory_entries),
+                {memory, summary, rollout},
+            )
+            self.assertTrue(
+                all(entry.source == "codex" for entry in memory_entries.values())
+            )
+
     def test_incremental_index_uses_preloaded_mtimes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             claude_root = Path(tmp) / ".claude"
@@ -70,6 +105,112 @@ class IndexAllTests(unittest.TestCase):
             self.assertEqual(db.upserted, [])
             self.assertEqual(db.deleted, [stale])
             self.assertTrue(db.committed)
+
+    def test_index_stats_report_malformed_jsonl_and_top_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_root = root / ".codex"
+            sessions = codex_root / "sessions"
+            sessions.mkdir(parents=True)
+            session = sessions / "session.jsonl"
+            session.write_text(
+                "{bad json\n"
+                + json.dumps({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": "Index diagnostics",
+                    },
+                })
+                + "\n"
+            )
+
+            db = Database(root / "index.db")
+            try:
+                stats = index_all(
+                    db,
+                    claude_root=root / ".claude",
+                    codex_root=codex_root,
+                )
+            finally:
+                db.close()
+
+            self.assertEqual(stats.new, 1)
+            self.assertEqual(stats.malformed_jsonl_lines, 1)
+            self.assertEqual(stats.largest_files[0]["path"], str(session))
+            self.assertEqual(stats.slowest_files[0]["path"], str(session))
+
+    def test_updated_session_removes_stale_tool_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_root = root / ".claude"
+            project_dir = claude_root / "projects" / "sample"
+            project_dir.mkdir(parents=True)
+            session = project_dir / "session.jsonl"
+
+            session.write_text(
+                "\n".join([
+                    json.dumps({
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "1",
+                                    "name": "Bash",
+                                    "input": {"command": "git status"},
+                                },
+                            ],
+                        },
+                    }),
+                    json.dumps({
+                        "type": "user",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "1",
+                                    "content": "clean",
+                                },
+                            ],
+                        },
+                    }),
+                ]) + "\n"
+            )
+            os.utime(session, (1_700_000_000, 1_700_000_000))
+
+            db = Database(root / "index.db")
+            try:
+                index_all(
+                    db,
+                    claude_root=claude_root,
+                    codex_root=root / ".codex",
+                )
+                self.assertEqual(db.tool_name_counts(), {"Bash": 1})
+
+                session.write_text(
+                    json.dumps({
+                        "type": "user",
+                        "message": {
+                            "role": "user",
+                            "content": "The transcript no longer has tool calls.",
+                        },
+                    }) + "\n"
+                )
+                os.utime(session, (1_700_000_010, 1_700_000_010))
+
+                stats = index_all(
+                    db,
+                    claude_root=claude_root,
+                    codex_root=root / ".codex",
+                )
+
+                self.assertEqual(stats.updated, 1)
+                self.assertEqual(db.tool_name_counts(), {})
+            finally:
+                db.close()
 
     def test_parse_claude_session_keeps_transcript_and_skips_tool_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
