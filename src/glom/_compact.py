@@ -15,7 +15,7 @@ _GUTTER = "  "
 
 TRUNCATION_LINE = (
     "(output truncated at 16 KB"
-    " \u2014 run with --json for full data or --limit to scope down)"
+    " \u2014 use filters or --limit to scope down, --json for exact records)"
 )
 _TRUNCATION_RESERVED = len(TRUNCATION_LINE.encode("utf-8")) + 1  # +1 for \n
 _FULL_CAP = 16_384
@@ -23,7 +23,7 @@ _BODY_BUDGET = _FULL_CAP - _TRUNCATION_RESERVED
 
 
 def compact_json(data: Any, **kwargs: Any) -> str:
-    """Render JSON for agent consumption without pretty-print whitespace."""
+    """Render JSON for automation without pretty-print whitespace."""
     kwargs.pop("indent", None)
     kwargs.setdefault("separators", (",", ":"))
     return json.dumps(data, **kwargs)
@@ -175,7 +175,7 @@ def compact_table(
     if total is not None and total > len(rows):
         lines.append(
             f"(showing {len(rows)} of {total}"
-            " \u2014 use --limit 0 for all, --json for machine-readable)"
+            " \u2014 use --limit 0 for all, --json for exact records)"
         )
 
     return "\n".join(lines) + "\n"

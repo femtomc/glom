@@ -143,7 +143,7 @@ def main() -> None:
 
 @main.command()
 @click.option("--full", is_flag=True, help="Force full re-index (ignore mtimes).")
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def index(full: bool, as_json: bool) -> None:
     """Walk ~/.claude and ~/.codex, index every discoverable file."""
     db = Database()
@@ -258,7 +258,7 @@ def _search_row(r, i: int) -> dict:
     help="Maximum results.  0 = unlimited.",
 )
 @click.option("--full", is_flag=True, help="Show multi-line detail per result.")
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 @click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
 def search(
     query: str,
@@ -389,7 +389,7 @@ def _context_tool_row(r) -> dict:
     show_default=True,
     help="Tool calls to include for each session.  0 = unlimited.",
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def context(
     query: str,
     kind: str | None,
@@ -532,7 +532,7 @@ def _tool_call_row(r, i: int) -> dict:
 @click.option(
     "--full", is_flag=True, help="Show all rows (--names) or multi-line detail (query)."
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 @click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
 def tools(
     query: str | None,
@@ -685,7 +685,7 @@ _STATS_COLUMNS: list[Column] = [
 
 
 @main.command()
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def stats(as_json: bool) -> None:
     """Show index statistics."""
     db = Database()
@@ -728,7 +728,7 @@ def stats(as_json: bool) -> None:
     is_flag=True,
     help="Run VACUUM after checkpointing. Can take time on large DBs.",
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def optimize(rebuild_fts: bool, vacuum: bool, as_json: bool) -> None:
     """Run SQLite and FTS maintenance for the local index."""
     db = Database()
@@ -822,7 +822,7 @@ def _doctor_report(
 
 
 @main.command()
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def doctor(as_json: bool) -> None:
     """Check index health and source-root coverage."""
     report = _doctor_report()
@@ -889,7 +889,7 @@ def doctor(as_json: bool) -> None:
     is_flag=True,
     help="Show full content without truncation (default truncates to 4000 chars).",
 )
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
+@click.option("--json", "as_json", is_flag=True, help="Emit compact JSON to stdout.")
 def show(path: str, full: bool, as_json: bool) -> None:
     """Display a specific indexed document (exact or suffix match on PATH)."""
     db = Database()

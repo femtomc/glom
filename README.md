@@ -37,7 +37,7 @@ uv tool install git+https://github.com/femtomc/glom
 ```
 glom index          # incremental (mtime-based, skips unchanged files)
 glom index --full   # force full re-index
-glom index --json   # include diagnostics for agents
+glom index --json   # compact diagnostics for scripts
 ```
 
 Bulk mode (deferred FTS rebuild) activates automatically when >100 files
@@ -55,7 +55,7 @@ glom search "protocol" -s claude -n 5     # filter by source, limit results
 glom search "renderer" --repo synth       # filter project slug or path
 glom search "release" --since 2026-04-01  # filter by file mtime
 glom search "macro" --path memories       # filter by path substring
-glom search "deploy" --json               # structured output for agents
+glom search "deploy" --json               # compact JSON for exact fields
 ```
 
 Kinds: `memory`, `plan`, `task`, `session`, `skill`, `instructions`,
@@ -83,7 +83,7 @@ glom tools '"pyproject.toml"' -t Read     # phrase search (FTS5 syntax)
 glom tools "zig build" --repo synth       # filter project slug or path
 glom tools "error" --since 2026-04-01     # filter by session file mtime
 glom tools --names                        # list all tool names with counts
-glom tools "error" --json                 # JSON output
+glom tools "error" --json                 # compact JSON for downstream parsing
 ```
 
 ### Inspect
@@ -98,7 +98,9 @@ glom show MEMORY.md                       # suffix match
 glom show @1                              # last search/context result ref
 ```
 
-All commands support `--json` for agent consumption.
+Prefer the default compact text for exploratory agent work. All commands
+support compact `--json`, but use it on purpose: exact fields, downstream
+parsing, or records that the text view intentionally truncates or omits.
 
 ## What gets indexed
 
