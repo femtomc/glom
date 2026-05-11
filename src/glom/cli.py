@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from datetime import datetime
@@ -10,7 +9,6 @@ from pathlib import Path
 
 import rich_click as click
 from rich.console import Console
-from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -20,7 +18,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from glom._compact import Column, apply_16kb_cap, compact_table
+from glom._compact import Column, apply_16kb_cap, compact_json, compact_table
 from glom.db import Database
 from glom.indexer import discover, index_all
 
@@ -28,6 +26,7 @@ console = Console(stderr=True)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 def _human(n: int | float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -43,7 +42,7 @@ def _fts_error(exc: Exception) -> bool:
 
 
 def _truncate(s: str, max_len: int) -> str:
-    return s if len(s) <= max_len else s[:max_len - 1] + "\u2026"
+    return s if len(s) <= max_len else s[: max_len - 1] + "\u2026"
 
 
 def _parse_date_bound(value: str | None, *, end_of_day: bool = False) -> float | None:
@@ -57,9 +56,7 @@ def _parse_date_bound(value: str | None, *, end_of_day: bool = False) -> float |
         else:
             dt = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise click.BadParameter(
-            "use YYYY-MM-DD or an ISO timestamp"
-        ) from exc
+        raise click.BadParameter("use YYYY-MM-DD or an ISO timestamp") from exc
     return dt.timestamp()
 
 
@@ -134,6 +131,7 @@ def _make_index_progress_callbacks(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+
 @click.group()
 @click.version_option(package_name="glom")
 def main() -> None:
@@ -141,6 +139,7 @@ def main() -> None:
 
 
 # ── index ────────────────────────────────────────────────────────────────────
+
 
 @main.command()
 @click.option("--full", is_flag=True, help="Force full re-index (ignore mtimes).")
@@ -161,24 +160,33 @@ def index(full: bool, as_json: bool) -> None:
         _, _, on_progress, on_phase = _make_index_progress_callbacks(progress)
 
         stats = index_all(
-            db, full=full,
-            on_progress=on_progress, on_phase=on_phase,
+            db,
+            full=full,
+            on_progress=on_progress,
+            on_phase=on_phase,
         )
 
     db.close()
 
     if as_json:
-        click.echo(json.dumps({
-            "new": stats.new, "updated": stats.updated,
-            "unchanged": stats.unchanged, "deleted": stats.deleted,
-            "errors": stats.errors, "total": stats.total_processed,
-            "tool_calls": stats.tool_calls_extracted,
-            "malformed_jsonl_lines": stats.malformed_jsonl_lines,
-            "parse_errors": stats.parse_errors,
-            "largest_files": stats.largest_files,
-            "slowest_files": stats.slowest_files,
-            "tool_call_files": stats.tool_call_files,
-        }))
+        click.echo(
+            compact_json(
+                {
+                    "new": stats.new,
+                    "updated": stats.updated,
+                    "unchanged": stats.unchanged,
+                    "deleted": stats.deleted,
+                    "errors": stats.errors,
+                    "total": stats.total_processed,
+                    "tool_calls": stats.tool_calls_extracted,
+                    "malformed_jsonl_lines": stats.malformed_jsonl_lines,
+                    "parse_errors": stats.parse_errors,
+                    "largest_files": stats.largest_files,
+                    "slowest_files": stats.slowest_files,
+                    "tool_call_files": stats.tool_call_files,
+                }
+            )
+        )
         return
 
     parts: list[str] = []
@@ -199,13 +207,9 @@ def index(full: bool, as_json: bool) -> None:
         summary += f"  [yellow]({stats.malformed_jsonl_lines:,} malformed JSONL lines skipped)[/]"
     console.print(summary)
     for row in stats.slowest_files[:3]:
-        console.print(
-            f"  [dim]slow[/] {row['milliseconds']} ms  {row['path']}"
-        )
+        console.print(f"  [dim]slow[/] {row['milliseconds']} ms  {row['path']}")
     for row in stats.largest_files[:3]:
-        console.print(
-            f"  [dim]large[/] {_human(row['bytes'])}  {row['path']}"
-        )
+        console.print(f"  [dim]large[/] {_human(row['bytes'])}  {row['path']}")
     for key, count in sorted(stats.parse_errors.items()):
         console.print(f"  [red]parse errors[/] {key}: {count}")
     for ep in stats.error_paths[:5]:
@@ -240,30 +244,51 @@ def _search_row(r, i: int) -> dict:
 @click.option("-k", "--kind", help="Filter by document kind.")
 @click.option("-p", "--project", help="Filter by project slug (substring).")
 @click.option("--repo", help="Filter by project slug or path substring.")
-@click.option("-s", "--source", type=click.Choice(["claude", "codex"]),
-              help="Filter by source.")
+@click.option(
+    "-s", "--source", type=click.Choice(["claude", "codex"]), help="Filter by source."
+)
 @click.option("--path", "path_fragment", help="Filter by path substring.")
 @click.option("--since", help="Filter to files modified on/after this date.")
 @click.option("--until", help="Filter to files modified on/before this date.")
-@click.option("-n", "--limit", default=10, show_default=True,
-              help="Maximum results.  0 = unlimited.")
+@click.option(
+    "-n",
+    "--limit",
+    default=10,
+    show_default=True,
+    help="Maximum results.  0 = unlimited.",
+)
 @click.option("--full", is_flag=True, help="Show multi-line detail per result.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
 @click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
-def search(query: str, kind: str | None, project: str | None,
-           repo: str | None, source: str | None,
-           path_fragment: str | None, since: str | None, until: str | None,
-           limit: int, full: bool,
-           as_json: bool, json_legacy: bool) -> None:
+def search(
+    query: str,
+    kind: str | None,
+    project: str | None,
+    repo: str | None,
+    source: str | None,
+    path_fragment: str | None,
+    since: str | None,
+    until: str | None,
+    limit: int,
+    full: bool,
+    as_json: bool,
+    json_legacy: bool,
+) -> None:
     """Full-text search over the index (FTS5, BM25-ranked)."""
     db = Database()
     try:
         since_ts = _parse_date_bound(since)
         until_ts = _parse_date_bound(until, end_of_day=True)
         results, total = db.search(
-            query, kind=kind, project=project, repo=repo,
-            source=source, path_fragment=path_fragment,
-            since=since_ts, until=until_ts, limit=limit,
+            query,
+            kind=kind,
+            project=project,
+            repo=repo,
+            source=source,
+            path_fragment=path_fragment,
+            since=since_ts,
+            until=until_ts,
+            limit=limit,
         )
         db.save_search_refs("documents", [r.path for r in results])
     except Exception as exc:
@@ -275,17 +300,29 @@ def search(query: str, kind: str | None, project: str | None,
         db.close()
 
     if json_legacy:
-        click.echo(json.dumps([
-            {"path": r.path, "kind": r.kind, "source": r.source,
-             "project": r.project, "title": r.title,
-             "snippet": r.snippet, "rank": r.rank, "size": r.size}
-            for r in results
-        ], indent=2))
+        click.echo(
+            compact_json(
+                [
+                    {
+                        "path": r.path,
+                        "kind": r.kind,
+                        "source": r.source,
+                        "project": r.project,
+                        "title": r.title,
+                        "snippet": r.snippet,
+                        "rank": r.rank,
+                        "size": r.size,
+                    }
+                    for r in results
+                ],
+                indent=2,
+            )
+        )
         return
 
     if as_json:
         rows = [_search_row(r, i) for i, r in enumerate(results, 1)]
-        click.echo(json.dumps(_json_envelope(rows, total, limit), indent=2))
+        click.echo(compact_json(_json_envelope(rows, total, limit), indent=2))
         return
 
     if not results:
@@ -311,6 +348,7 @@ def search(query: str, kind: str | None, project: str | None,
 
 # ── context ──────────────────────────────────────────────────────────────────
 
+
 def _context_tool_row(r) -> dict:
     return {
         "tool": r.tool_name,
@@ -326,31 +364,61 @@ def _context_tool_row(r) -> dict:
 @click.option("-k", "--kind", help="Filter by document kind.")
 @click.option("-p", "--project", help="Filter by project slug (substring).")
 @click.option("--repo", help="Filter by project slug or path substring.")
-@click.option("-s", "--source", type=click.Choice(["claude", "codex"]),
-              help="Filter by source.")
+@click.option(
+    "-s", "--source", type=click.Choice(["claude", "codex"]), help="Filter by source."
+)
 @click.option("--path", "path_fragment", help="Filter by path substring.")
 @click.option("--since", help="Filter to files modified on/after this date.")
 @click.option("--until", help="Filter to files modified on/before this date.")
-@click.option("-n", "--limit", default=5, show_default=True,
-              help="Maximum result bundles.  0 = unlimited.")
-@click.option("--window", default=2, show_default=True,
-              help="Context lines before and after the first local match.")
-@click.option("--tools-limit", default=5, show_default=True,
-              help="Tool calls to include for each session.  0 = unlimited.")
+@click.option(
+    "-n",
+    "--limit",
+    default=5,
+    show_default=True,
+    help="Maximum result bundles.  0 = unlimited.",
+)
+@click.option(
+    "--window",
+    default=2,
+    show_default=True,
+    help="Context lines before and after the first local match.",
+)
+@click.option(
+    "--tools-limit",
+    default=5,
+    show_default=True,
+    help="Tool calls to include for each session.  0 = unlimited.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
-def context(query: str, kind: str | None, project: str | None,
-            repo: str | None, source: str | None,
-            path_fragment: str | None, since: str | None, until: str | None,
-            limit: int, window: int, tools_limit: int, as_json: bool) -> None:
+def context(
+    query: str,
+    kind: str | None,
+    project: str | None,
+    repo: str | None,
+    source: str | None,
+    path_fragment: str | None,
+    since: str | None,
+    until: str | None,
+    limit: int,
+    window: int,
+    tools_limit: int,
+    as_json: bool,
+) -> None:
     """Bundle ranked hits with local document context and session tool calls."""
     db = Database()
     try:
         since_ts = _parse_date_bound(since)
         until_ts = _parse_date_bound(until, end_of_day=True)
         results, total = db.search(
-            query, kind=kind, project=project, repo=repo,
-            source=source, path_fragment=path_fragment,
-            since=since_ts, until=until_ts, limit=limit,
+            query,
+            kind=kind,
+            project=project,
+            repo=repo,
+            source=source,
+            path_fragment=path_fragment,
+            since=since_ts,
+            until=until_ts,
+            limit=limit,
         )
         db.save_search_refs("documents", [r.path for r in results])
 
@@ -360,19 +428,24 @@ def context(query: str, kind: str | None, project: str | None,
             content = doc["content"] if doc else ""
             tools_for_session = (
                 db.tool_calls_for_session(result.path, limit=tools_limit)
-                if result.kind in {"session", "history"} else []
+                if result.kind in {"session", "history"}
+                else []
             )
-            rows.append({
-                "ref": f"@{i}",
-                "kind": result.kind,
-                "source": result.source,
-                "project": result.project,
-                "title": result.title,
-                "path": result.path,
-                "snippet": result.snippet.replace("\u00bb", "").replace("\u00ab", ""),
-                "context": _content_window(content, query, max(0, window)),
-                "tool_calls": [_context_tool_row(r) for r in tools_for_session],
-            })
+            rows.append(
+                {
+                    "ref": f"@{i}",
+                    "kind": result.kind,
+                    "source": result.source,
+                    "project": result.project,
+                    "title": result.title,
+                    "path": result.path,
+                    "snippet": result.snippet.replace("\u00bb", "").replace(
+                        "\u00ab", ""
+                    ),
+                    "context": _content_window(content, query, max(0, window)),
+                    "tool_calls": [_context_tool_row(r) for r in tools_for_session],
+                }
+            )
     except Exception as exc:
         if _fts_error(exc):
             click.echo(f"Bad query: {exc}", err=True)
@@ -382,7 +455,7 @@ def context(query: str, kind: str | None, project: str | None,
         db.close()
 
     if as_json:
-        click.echo(json.dumps(_json_envelope(rows, total, limit), indent=2))
+        click.echo(compact_json(_json_envelope(rows, total, limit), indent=2))
         return
 
     if not rows:
@@ -443,22 +516,39 @@ def _tool_call_row(r, i: int) -> dict:
 @click.option("-t", "--tool", "tool_name", help="Filter by tool name.")
 @click.option("-p", "--project", help="Filter by project slug (substring).")
 @click.option("--repo", help="Filter by project slug or path substring.")
-@click.option("-s", "--source", type=click.Choice(["claude", "codex"]),
-              help="Filter by source.")
+@click.option(
+    "-s", "--source", type=click.Choice(["claude", "codex"]), help="Filter by source."
+)
 @click.option("--path", "path_fragment", help="Filter by session path substring.")
 @click.option("--since", help="Filter to sessions modified on/after this date.")
 @click.option("--until", help="Filter to sessions modified on/before this date.")
-@click.option("-n", "--limit", default=20, show_default=True,
-              help="Maximum results.  0 = unlimited.")
-@click.option("--full", is_flag=True,
-              help="Show all rows (--names) or multi-line detail (query).")
+@click.option(
+    "-n",
+    "--limit",
+    default=20,
+    show_default=True,
+    help="Maximum results.  0 = unlimited.",
+)
+@click.option(
+    "--full", is_flag=True, help="Show all rows (--names) or multi-line detail (query)."
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
 @click.option("--json-legacy", "json_legacy", is_flag=True, hidden=True)
-def tools(query: str | None, names: bool, tool_name: str | None,
-          project: str | None, repo: str | None, source: str | None,
-          path_fragment: str | None, since: str | None, until: str | None,
-          limit: int, full: bool, as_json: bool,
-          json_legacy: bool) -> None:
+def tools(
+    query: str | None,
+    names: bool,
+    tool_name: str | None,
+    project: str | None,
+    repo: str | None,
+    source: str | None,
+    path_fragment: str | None,
+    since: str | None,
+    until: str | None,
+    limit: int,
+    full: bool,
+    as_json: bool,
+    json_legacy: bool,
+) -> None:
     """Search tool calls, or list tool names with --names."""
     db = Database()
 
@@ -471,14 +561,17 @@ def tools(query: str | None, names: bool, tool_name: str | None,
         shown = items if cap <= 0 else items[:cap]
 
         if json_legacy:
-            click.echo(json.dumps(counts, indent=2))
+            click.echo(compact_json(counts, indent=2))
             return
 
         if as_json:
             rows = [{"tool": name, "count": count} for name, count in shown]
-            click.echo(json.dumps(
-                _json_envelope(rows, total_items, cap), indent=2,
-            ))
+            click.echo(
+                compact_json(
+                    _json_envelope(rows, total_items, cap),
+                    indent=2,
+                )
+            )
             return
 
         if not counts:
@@ -486,9 +579,14 @@ def tools(query: str | None, names: bool, tool_name: str | None,
             return
 
         row_dicts = [{"tool": name, "count": count} for name, count in shown]
-        click.echo(compact_table(
-            row_dicts, _TOOLS_NAMES_COLUMNS, total=total_items,
-        ), nl=False)
+        click.echo(
+            compact_table(
+                row_dicts,
+                _TOOLS_NAMES_COLUMNS,
+                total=total_items,
+            ),
+            nl=False,
+        )
         return
 
     if not query:
@@ -500,9 +598,15 @@ def tools(query: str | None, names: bool, tool_name: str | None,
         since_ts = _parse_date_bound(since)
         until_ts = _parse_date_bound(until, end_of_day=True)
         results, total = db.search_tool_calls(
-            query, tool_name=tool_name, project=project,
-            repo=repo, source=source, path_fragment=path_fragment,
-            since=since_ts, until=until_ts, limit=limit,
+            query,
+            tool_name=tool_name,
+            project=project,
+            repo=repo,
+            source=source,
+            path_fragment=path_fragment,
+            since=since_ts,
+            until=until_ts,
+            limit=limit,
         )
     except Exception as exc:
         if _fts_error(exc):
@@ -513,21 +617,31 @@ def tools(query: str | None, names: bool, tool_name: str | None,
         db.close()
 
     if json_legacy:
-        click.echo(json.dumps([
-            {"tool_name": r.tool_name, "session_path": r.session_path,
-             "source": r.source, "project": r.project,
-             "call_id": r.call_id, "line_number": r.line_number,
-             "is_error": r.is_error,
-             "input_snippet": r.input_snippet,
-             "output_snippet": r.output_snippet,
-             "rank": r.rank}
-            for r in results
-        ], indent=2))
+        click.echo(
+            compact_json(
+                [
+                    {
+                        "tool_name": r.tool_name,
+                        "session_path": r.session_path,
+                        "source": r.source,
+                        "project": r.project,
+                        "call_id": r.call_id,
+                        "line_number": r.line_number,
+                        "is_error": r.is_error,
+                        "input_snippet": r.input_snippet,
+                        "output_snippet": r.output_snippet,
+                        "rank": r.rank,
+                    }
+                    for r in results
+                ],
+                indent=2,
+            )
+        )
         return
 
     if as_json:
         rows = [_tool_call_row(r, i) for i, r in enumerate(results, 1)]
-        click.echo(json.dumps(_json_envelope(rows, total, limit), indent=2))
+        click.echo(compact_json(_json_envelope(rows, total, limit), indent=2))
         return
 
     if not results:
@@ -552,9 +666,14 @@ def tools(query: str | None, names: bool, tool_name: str | None,
         return
 
     row_dicts = [_tool_call_row(r, i) for i, r in enumerate(results, 1)]
-    click.echo(compact_table(
-        row_dicts, _TOOLS_QUERY_COLUMNS, total=total,
-    ), nl=False)
+    click.echo(
+        compact_table(
+            row_dicts,
+            _TOOLS_QUERY_COLUMNS,
+            total=total,
+        ),
+        nl=False,
+    )
 
 
 # ── stats ────────────────────────────────────────────────────────────────────
@@ -574,7 +693,7 @@ def stats(as_json: bool) -> None:
     db.close()
 
     if as_json:
-        click.echo(json.dumps(s, indent=2, default=str))
+        click.echo(compact_json(s, indent=2, default=str))
         return
 
     if not s["total"]:
@@ -599,11 +718,16 @@ def stats(as_json: bool) -> None:
 
 # ── optimize ─────────────────────────────────────────────────────────────────
 
+
 @main.command()
-@click.option("--rebuild-fts", is_flag=True,
-              help="Rebuild FTS tables before optimizing.")
-@click.option("--vacuum", is_flag=True,
-              help="Run VACUUM after checkpointing. Can take time on large DBs.")
+@click.option(
+    "--rebuild-fts", is_flag=True, help="Rebuild FTS tables before optimizing."
+)
+@click.option(
+    "--vacuum",
+    is_flag=True,
+    help="Run VACUUM after checkpointing. Can take time on large DBs.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
 def optimize(rebuild_fts: bool, vacuum: bool, as_json: bool) -> None:
     """Run SQLite and FTS maintenance for the local index."""
@@ -612,7 +736,7 @@ def optimize(rebuild_fts: bool, vacuum: bool, as_json: bool) -> None:
     db.close()
 
     if as_json:
-        click.echo(json.dumps(report, indent=2))
+        click.echo(compact_json(report, indent=2))
         return
 
     rows = [
@@ -667,10 +791,7 @@ def _doctor_report(
 
     stale_paths = sorted(indexed_paths - live_paths)
     missing_paths = sorted(live_paths - indexed_paths)
-    missing_roots = [
-        name for name, row in root_rows.items()
-        if not row["exists"]
-    ]
+    missing_roots = [name for name, row in root_rows.items() if not row["exists"]]
 
     needs_index = bool(missing_paths or stale_paths)
     return {
@@ -707,7 +828,7 @@ def doctor(as_json: bool) -> None:
     report = _doctor_report()
 
     if as_json:
-        click.echo(json.dumps(report, indent=2, default=str))
+        click.echo(compact_json(report, indent=2, default=str))
         return
 
     rows = [
@@ -719,47 +840,55 @@ def doctor(as_json: bool) -> None:
         },
     ]
     for name, root in report["roots"].items():
-        rows.append({
-            "check": f"{name} root",
-            "status": "ok" if root["exists"] else "missing",
-            "detail": root["path"],
-        })
-    rows.extend([
-        {
-            "check": "discoverable",
-            "status": "ok",
-            "detail": str(report["discoverable"]["total"]),
-        },
-        {
-            "check": "indexed",
-            "status": "ok",
-            "detail": str(report["indexed"]["total"]),
-        },
-        {
-            "check": "stale rows",
-            "status": "warn" if report["stale"]["count"] else "ok",
-            "detail": str(report["stale"]["count"]),
-        },
-        {
-            "check": "missing rows",
-            "status": "warn" if report["missing_from_index"]["count"] else "ok",
-            "detail": str(report["missing_from_index"]["count"]),
-        },
-        {
-            "check": "index needed",
-            "status": "warn" if report["needs_index"] else "ok",
-            "detail": "run glom index" if report["needs_index"] else "up to date",
-        },
-    ])
+        rows.append(
+            {
+                "check": f"{name} root",
+                "status": "ok" if root["exists"] else "missing",
+                "detail": root["path"],
+            }
+        )
+    rows.extend(
+        [
+            {
+                "check": "discoverable",
+                "status": "ok",
+                "detail": str(report["discoverable"]["total"]),
+            },
+            {
+                "check": "indexed",
+                "status": "ok",
+                "detail": str(report["indexed"]["total"]),
+            },
+            {
+                "check": "stale rows",
+                "status": "warn" if report["stale"]["count"] else "ok",
+                "detail": str(report["stale"]["count"]),
+            },
+            {
+                "check": "missing rows",
+                "status": "warn" if report["missing_from_index"]["count"] else "ok",
+                "detail": str(report["missing_from_index"]["count"]),
+            },
+            {
+                "check": "index needed",
+                "status": "warn" if report["needs_index"] else "ok",
+                "detail": "run glom index" if report["needs_index"] else "up to date",
+            },
+        ]
+    )
     click.echo(compact_table(rows, _DOCTOR_COLUMNS), nl=False)
 
 
 # ── show ─────────────────────────────────────────────────────────────────────
 
+
 @main.command()
 @click.argument("path")
-@click.option("--full", is_flag=True,
-              help="Show full content without truncation (default truncates to 4000 chars).")
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Show full content without truncation (default truncates to 4000 chars).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
 def show(path: str, full: bool, as_json: bool) -> None:
     """Display a specific indexed document (exact or suffix match on PATH)."""
@@ -778,7 +907,7 @@ def show(path: str, full: bool, as_json: bool) -> None:
         if not full and isinstance(d.get("content"), str) and len(d["content"]) > 4000:
             d["content"] = d["content"][:4000]
             d["_truncated"] = True
-        click.echo(json.dumps(d, indent=2, default=str))
+        click.echo(compact_json(d, indent=2, default=str))
         return
 
     content = doc["content"]

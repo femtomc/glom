@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 # Column = (header_lowercase, row_key, options_dict)
 # options: "align" ("left"|"right", default "left"), "max_width" (int, default 40)
@@ -18,6 +20,13 @@ TRUNCATION_LINE = (
 _TRUNCATION_RESERVED = len(TRUNCATION_LINE.encode("utf-8")) + 1  # +1 for \n
 _FULL_CAP = 16_384
 _BODY_BUDGET = _FULL_CAP - _TRUNCATION_RESERVED
+
+
+def compact_json(data: Any, **kwargs: Any) -> str:
+    """Render JSON for agent consumption without pretty-print whitespace."""
+    kwargs.pop("indent", None)
+    kwargs.setdefault("separators", (",", ":"))
+    return json.dumps(data, **kwargs)
 
 
 def _char_width(ch: str) -> int:
@@ -106,7 +115,7 @@ def compact_table(
 
     for row in rows:
         cells: list[str] = []
-        for (_header, key, opts) in columns:
+        for _header, key, opts in columns:
             max_w = opts.get("max_width", 40)
             raw = row.get(key) if isinstance(row, Mapping) else getattr(row, key, None)
             norm = _normalize_cell(raw)

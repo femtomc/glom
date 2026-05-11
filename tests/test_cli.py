@@ -74,9 +74,14 @@ class ShowJsonTests(unittest.TestCase):
     """glom show --json truncates content by default; --full disables."""
 
     _DOC = {
-        "path": "/tmp/test.jsonl", "kind": "session", "source": "claude",
-        "project": "test", "title": "test-session", "size": 50000,
-        "content": "x" * 10000, "indexed_at": 1700000000,
+        "path": "/tmp/test.jsonl",
+        "kind": "session",
+        "source": "claude",
+        "project": "test",
+        "title": "test-session",
+        "size": 50000,
+        "content": "x" * 10000,
+        "indexed_at": 1700000000,
     }
 
     def _run_show(self, *args: str) -> str:
@@ -99,6 +104,11 @@ class ShowJsonTests(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(len(data["content"]), 10000)
         self.assertNotIn("_truncated", data)
+
+    def test_json_is_single_line(self) -> None:
+        out = self._run_show("--json")
+        json.loads(out)
+        self.assertEqual(out.count("\n"), 1)
 
     def test_show_resolves_last_search_ref(self) -> None:
         runner = CliRunner()
@@ -130,36 +140,39 @@ class ToolsNamesLimitTests(unittest.TestCase):
     def test_default_caps_at_20(self) -> None:
         out = self._run_tools()
         self.assertIn("showing 20 of 30", out)
-        data_lines = [l for l in out.splitlines()
-                      if l.strip() and "tool_" in l]
+        data_lines = [
+            line for line in out.splitlines() if line.strip() and "tool_" in line
+        ]
         self.assertEqual(len(data_lines), 20)
 
     def test_limit_5(self) -> None:
         out = self._run_tools("--limit", "5")
         self.assertIn("showing 5 of 30", out)
-        data_lines = [l for l in out.splitlines()
-                      if l.strip() and "tool_" in l]
+        data_lines = [
+            line for line in out.splitlines() if line.strip() and "tool_" in line
+        ]
         self.assertEqual(len(data_lines), 5)
 
     def test_full_shows_all(self) -> None:
         out = self._run_tools("--full")
         self.assertNotIn("showing", out)
-        data_lines = [l for l in out.splitlines()
-                      if l.strip() and "tool_" in l]
+        data_lines = [
+            line for line in out.splitlines() if line.strip() and "tool_" in line
+        ]
         self.assertEqual(len(data_lines), 30)
 
     def test_no_box_drawing(self) -> None:
         out = self._run_tools()
         import re
+
         self.assertIsNone(
-            re.search(r'[┏━┃┗┓┛│─┬┼]', out),
+            re.search(r"[┏━┃┗┓┛│─┬┼]", out),
             "compact output must not contain box-drawing characters",
         )
 
     def test_no_trailing_whitespace(self) -> None:
         for line in self._run_tools().splitlines():
-            self.assertEqual(line, line.rstrip(),
-                             f"trailing whitespace: {line!r}")
+            self.assertEqual(line, line.rstrip(), f"trailing whitespace: {line!r}")
 
 
 class SearchCompactTests(unittest.TestCase):
@@ -191,7 +204,8 @@ class SearchCompactTests(unittest.TestCase):
         compact = self._run_search()
         full = self._run_search("--full")
         self.assertLess(
-            len(compact.splitlines()), len(full.splitlines()),
+            len(compact.splitlines()),
+            len(full.splitlines()),
             "compact mode should produce fewer lines than --full",
         )
 
@@ -217,8 +231,7 @@ class SearchCompactTests(unittest.TestCase):
 
     def test_no_trailing_whitespace(self) -> None:
         for line in self._run_search().splitlines():
-            self.assertEqual(line, line.rstrip(),
-                             f"trailing whitespace: {line!r}")
+            self.assertEqual(line, line.rstrip(), f"trailing whitespace: {line!r}")
 
     def test_json_envelope(self) -> None:
         out = self._run_search("--json")
@@ -231,6 +244,11 @@ class SearchCompactTests(unittest.TestCase):
         self.assertEqual(data["displayed"], 5)
         self.assertEqual(data["total"], 50)
         self.assertTrue(data["truncated"])
+
+    def test_json_envelope_is_single_line(self) -> None:
+        out = self._run_search("--json")
+        json.loads(out)
+        self.assertEqual(out.count("\n"), 1)
 
     def test_json_legacy(self) -> None:
         out = self._run_search("--json-legacy")
